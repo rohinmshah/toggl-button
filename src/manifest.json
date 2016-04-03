@@ -8,7 +8,8 @@
     "scripts": [
       "scripts/vendor/bugsnag-2.min.js",
       "scripts/db.js",
-      "scripts/background.js"
+      "scripts/background.js",
+      "scripts/ajeya.js"
     ]
   },
   "content_security_policy": "script-src 'self' https://ssl.google-analytics.com; object-src 'self'",
@@ -31,6 +32,7 @@
     "chrome_style": true
   },
   "permissions": [
+    "tabs",
     "webRequest",
     "webRequestBlocking",
     "alarms",
