@@ -24,7 +24,7 @@ function urlEntry(r, d, p, f) {
 var AJEYA_WEBSITES = [
     urlEntry(/https?:\/\/(?:.*\.)?xkcd\.com\S*/, 'XKCD', 'Fun', false),
     urlEntry(/https?:\/\/(?:.*\.)?smbc-comics\.com\S*/, 'SMBC', 'Fun', false),
-    urlEntry(/https?:\/\/(?:.*\.)?todoist\.com\S*/, 'Todoist', 'Work - Misc.', true)
+    urlEntry(/https?:\/\/(?:.*\.)?todoist\.com\S*/, 'Todoist', 'Work - Misc.', false)
 ]
 
 function contains(a, obj) {

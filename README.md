@@ -81,10 +81,6 @@ Add Toggl one-click time tracking to popular web tools.
   - [Phabricator][77]
   - [OpenProject][78]
 
-## Installing from the Web Store
-
-https://chrome.google.com/webstore/detail/toggl-button/oejgccbfbmkkpaidnkphaiaecficdnfn
-
 ## Installing from Source
 
 1.  Clone the repository: `git clone git://github.com/toggl/toggl-button`
