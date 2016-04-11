@@ -1,15 +1,30 @@
 var AjeyaTogglLock = false;
 
-var AJEYA_START_TIMEOUT = 500;
-var AJEYA_MAX_TIMEOUT = 60000;
+// Time in milliseconds between checking the current active tab.
+var AJEYA_TIME_INTERVAL = 1000;
 
-function urlPair(r, d, p) {
-    return { regex: r, description: d, project: p };
+// Time in milliseconds that we must be on a tab before we start a task for it.
+var AJEYA_TIME_TO_START_TASK = 5000;
+
+// True if there is no current task and the last task was stopped by AutoToggl.
+var lastTaskStoppedByAutoToggl = null;
+
+// A urlEntry consists of:
+// 1. regex -- Regular expression. This entry should be used for any URL
+//             matching the regex.
+// 2. description -- Description for the associated Toggl task.
+// 3. project -- Project for the associated Toggl task.
+// 4. force -- true if AutoToggl should create a new Toggl task even if a
+//             user-initiated Toggl task is ongoing.
+function urlEntry(r, d, p, f) {
+    return { regex: r, description: d, project: p, force: f };
 }
 
+// TODO: Will the regex screw up for something like http://foo.com/?q=http://xkcd.com
 var AJEYA_WEBSITES = [
-    urlPair(/http:\/\/(?:.*\.)?xkcd\.com\S*/, 'XKCD', 'Fun'),
-    urlPair(/http:\/\/(?:.*\.)?smbc-comics\.com\S*/, 'SMBC', 'Fun'),
+    urlEntry(/https?:\/\/(?:.*\.)?xkcd\.com\S*/, 'XKCD', 'Fun', false),
+    urlEntry(/https?:\/\/(?:.*\.)?smbc-comics\.com\S*/, 'SMBC', 'Fun', false),
+    urlEntry(/https?:\/\/(?:.*\.)?todoist\.com\S*/, 'Todoist', 'Work - Misc.', true)
 ]
 
 function contains(a, obj) {
@@ -21,22 +36,13 @@ function contains(a, obj) {
     return false;
 }
 
-function changeToggl (tab) {
+function changeTogglBasedOnTab (tab) {
     /* If the tab contains a recognized URL, changes Toggl so that it is
-     * tracking the right task. Releases the lock when it is done.
+     * tracking the right task.
      * Precondition:  The lock has been acquired.
      * tab:           The tab currently in focus
      */ 
-    if (!AjeyaTogglLock) {
-	console.log("ERROR: Lock not acquired when changing Toggl");
-    }
-    
     var entry = TogglButton.$curEntry;
-    if (entry && !(entry.tags && contains(entry.tags, "auto-toggl"))) {
-	AjeyaTogglLock = false;
-	return;
-    }
-
     var websiteEntry = null;
     for (var i = 0; i < AJEYA_WEBSITES.length; i++) {
         if (AJEYA_WEBSITES[i].regex.exec(tab.url)) {
@@ -45,49 +51,65 @@ function changeToggl (tab) {
         }
     }
 
-    // If the new task is the same as the old task, we don't need to do
-    // anything, so we release the lock and return.
-    if (entry && websiteEntry && entry.description == websiteEntry.description) {
-	AjeyaTogglLock = false;
+    // If the new task is the same as the old task, no need to do anything.
+    if (entry && websiteEntry && entry.description === websiteEntry.description) {
 	return;
     }
 
     // If there is a task going on, it must be an Auto-Toggl'd task.  Since
     // we have navigated away from the old site, we should stop that task.
-    if (entry) {
-	console.log('Stopping the current task');
-	TogglButton.stopTimeEntry(
-	    { type: 'stop', respond: true },
-	    function(response) {
-		if (response.success) {
-		    // Lock will be released in startToggl
-		    startToggl(websiteEntry);
-		} else {
-		    console.log('ERROR: Failed to stop task!');
-		    console.log(response);
-		    AjeyaTogglLock = false;
-		}
-	    });
-    } else if (websiteEntry) {
-	// Lock will be released in startToggl
-	startToggl(websiteEntry);
-    } else {
-	// Release the lock
-	AjeyaTogglLock = false;
+    if (websiteEntry) {
+	maybeStartToggl(websiteEntry);
+    } else if (entry) {
+	stopAutoToggl();
     }
 }
 
-function startToggl(websiteEntry) {
+function maybeStartToggl(websiteEntry) {
     /* Starts a new Toggl entry based on details from websiteEntry.
-     * Precondition:  The lock has been acquired, no task is running
      * websiteEntry:  An element of AJEYA_WEBSITES
+     * entry:         A TogglButton entry
      */
     if (!websiteEntry) {
-	AjeyaTogglLock = false;
+	return;
+    }
+    var entry = TogglButton.$curEntry;
+
+    // If there is no current task, but the task we want to start and the last
+    // task stopped are the same, and the last task was stopped by the user,
+    // then don't start the task -- we would be undoing the user's action
+    var noCurrTask = !entry;
+    var lastTask = TogglButton.$latestStoppedEntry
+    var sameAsLastDesc = lastTask && websiteEntry.description === lastTask.description;
+    var sameAsLastProj = lastTask && websiteEntry.project === lastTask.project;
+    var sameAsLastTask = sameAsLastDesc && sameAsLastProj;
+    if (noCurrTask && sameAsLastTask && !lastTaskStoppedByAutoToggl) {
 	return;
     }
 
-    opts = {
+    // We can only start a new task if we want to force the task to start, or
+    // if there is no current task, or the current task is AutoToggld
+    var currTaskIsAuto = entry && entry.tags && contains(entry.tags, "auto-toggl");
+    if (!(websiteEntry.force || noCurrTask || currTaskIsAuto)) {
+	return;
+    }
+
+    AjeyaTogglLock = true;
+
+    function startTogglIfMatch(tab) {
+	if (websiteEntry.regex.exec(tab.url)) {
+	    startAutoToggl(websiteEntry);
+	}
+    };
+
+    setTimeout(function () {
+	checkActiveTab(startTogglIfMatch, function () {});
+	AjeyaTogglLock = false;
+    }, AJEYA_TIME_TO_START_TASK);
+}
+
+function startAutoToggl(websiteEntry) {
+    var opts = {
         type: 'timeEntry',
         respond: true,
         description: websiteEntry.description,
@@ -98,40 +120,71 @@ function startToggl(websiteEntry) {
     };
 
     console.log('Creating new task: ' + opts.description);
+    lastTaskStoppedByAutoToggl = TogglButton.$curEntry;
     TogglButton.createTimeEntry(opts, function (response) {
 	if (!response.success) {
 	    console.log('ERROR: Failed to create task!');
 	    console.log(response);
 	}
-	AjeyaTogglLock = false;
     });
     TogglButton.hideNotification('remind-to-track-time');
-
 }
 
-function checkActiveTab(timeout) {
-    if (AjeyaTogglLock) {
-        if (timeout <= AJEYA_MAX_TIMEOUT) {
-            setTimeout(function () {
-                         checkActiveTab(timeout*2);
-                       },
-                       timeout);
-        }
-    } else {
-	AjeyaTogglLock = true;
-	chrome.tabs.query(
-	    {active: true, currentWindow: true},
-	    function (tabs) {
-		if (tabs.length === 1) {
-		    changeToggl(tabs[0]);
-		} else {
-		    console.log('ERROR: Did not find the active tab -- instead got ' + tabs);
-		    AjeyaTogglLock = false;
-		}
-	    });
+function stopAutoToggl() {
+    /*
+     * Stops the current task if it was created by Auto-Toggl.
+     */
+    var entry = TogglButton.$curEntry;
+    if (!(entry && entry.tags && contains(entry.tags, "auto-toggl"))) {
+	return;
     }
+
+    console.log('Stopping the task ' + entry.description);
+    lastTaskStoppedByAutoToggl = entry;
+    TogglButton.stopTimeEntry(
+	{ type: 'stop', respond: true },
+	function(response) {
+	    if (!response.success) {
+		console.log('ERROR: Failed to stop task!');
+		console.log(response);
+	    }
+	});
 }
 
+function checkActiveTab(onSuccess, onFail) {
+    chrome.tabs.query(
+	{active: true, currentWindow: true},
+	function (tabs) {
+	    if (tabs.length === 1) {
+		onSuccess(tabs[0]);
+	    } else {
+		onFail();
+	    }
+	});
+}
+
+function loop () {
+    // Don't do anything until the extension has finished loading the user
+    // Don't do anything if the lock has been acquired
+    if (TogglButton.$user && !AjeyaTogglLock) {
+
+	var entry = TogglButton.$curEntry;
+	// Intentionally using identity instead of equality, I think it means
+	// that if the same task is started again, it will not be identical
+	// even though it could be equal.
+	if (entry && entry != lastTaskStoppedByAutoToggl) {
+	    lastTaskStoppedByAutoToggl = null;
+	}
+
+	checkActiveTab(changeTogglBasedOnTab, stopAutoToggl);
+    }
+
+    setTimeout(loop, AJEYA_TIME_INTERVAL);
+}
+
+loop();
+
+/*
 chrome.tabs.onActivated.addListener(function(activeInfo) {
     checkActiveTab(AJEYA_START_TIMEOUT);
 });
@@ -141,3 +194,4 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
 	checkActiveTab(AJEYA_START_TIMEOUT);
     }
 });
+*/
